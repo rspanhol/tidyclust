@@ -1,0 +1,184 @@
+---
+title: "Kmeans de datiles"
+author: "REspañol"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(tidyclust)
+library(ggcorrplot)
+```
+
+```{r}
+datiles <- readxl::read_xlsx("Date_Fruit_Datasets.xlsx",
+                             sheet = "Date_Fruit_Datasets")
+```
+
+```{r}
+datiles <- datiles |> clean_names()
+```
+
+```{r}
+datiles$class <- NULL
+
+
+# datiles <- datiles |> select(-class)
+```
+
+```{r}
+matriz_corr <- cor(datiles)
+
+
+ggcorrplot(matriz_corr)
+```
+
+## Datos normalizados
+
+```{r}
+matriz_normalizada <- cor(scale(datiles))
+
+ggcorrplot(matriz_normalizada)
+```
+
+## Análisis de kmeans
+
+```{r}
+kmeans_spec <- k_means(num_clusters = 3) |> 
+                tidyclust::set_engine("ClusterR", max_iters =1000)
+```
+
+## recipe de kmeans
+
+```{r}
+recipe_kmeans <- recipe(~., data = datiles) |> 
+                 step_normalize(all_numeric_predictors()) |> 
+                 step_pca(all_numeric_predictors(), threshold = 0.9)
+```
+
+```{r}
+kmeans_wf <- workflow(recipe_kmeans, spec = kmeans_spec)
+```
+
+## Ejecución del modelo
+
+```{r}
+kmeans_fit <- fit(kmeans_wf, data = datiles)
+```
+
+```{r}
+kmeans_fit
+```
+
+## Extracción de la asignación de clusters
+
+```{r}
+extract_cluster_assignment(kmeans_fit)
+```
+
+## Extracción de centoides
+
+```{r}
+extract_centroids(kmeans_fit)
+```
+
+```{r}
+
+
+datiles |> ggplot(aes(x = area, y = solidity))+
+           geom_point()
+```
+
+```{r}
+clusters <- extract_cluster_assignment(kmeans_fit) |> 
+            pull()
+```
+
+```{r}
+datiles$clusters <- clusters
+```
+
+```{r}
+datiles |> ggplot(aes(x = area, y = extent, color= clusters))+
+           geom_point()
+```
+
+## 
+
+## Elección del número adecuado de k
+
+```{r}
+kmeans_spec2 <- k_means(num_clusters = tune()) |> 
+                set_engine("ClusterR", max_iters = 1000)
+
+
+kmeans_wf <- kmeans_wf |> update_model(kmeans_spec2)
+```
+
+```{r}
+mis_metricas <- cluster_metric_set(sse_within_total,silhouette_avg)
+```
+
+```{r}
+cuadricula <- tibble(num_clusters= 1:15)
+
+set.seed(777)
+boots <- bootstraps(datiles, times=10)
+```
+
+```{r}
+kmeans_res <- tune_cluster(
+                   kmeans_wf,
+                   resamples = boots,
+                   grid = cuadricula,
+                   metrics = mis_metricas
+)
+```
+
+## metricas del modelo
+
+```{r}
+metricas_clus <- collect_metrics(kmeans_res)
+
+```
+
+## Método Elbow Point
+
+```{r}
+metricas_clus |> filter(.metric=="sse_within_total") |> 
+             ggplot(aes(x = num_clusters, y = mean))+
+             geom_line()+ geom_point(color = "blue")
+  
+```
+
+## Método Sihouette
+
+```{r}
+metricas_clus |> filter(.metric=="silhouette_avg") |> 
+             ggplot(aes(x = num_clusters, y = mean))+
+             geom_line()+ geom_point(color = "red")
+```
+
+```{r}
+kmeans_res |> show_best(n=15)
+```
+
+## Mejor modelo
+
+```{r}
+kmeans_spec_final <- k_means(num_clusters = tune())
+best_params <- tibble(num_clusters= 3)
+
+modelo_final <- finalize_model_tidyclust(kmeans_spec_final, best_params)
+
+kmeans_final_fit <- kmeans_wf |> update_model(modelo_final) |> fit(datiles)
+```
+
+## Predicción
+
+```{r}
+predict(kmeans_final_fit, datiles[25:50,])
+```
